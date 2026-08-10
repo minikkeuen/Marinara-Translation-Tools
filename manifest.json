@@ -1,0 +1,15 @@
+{
+  "kind": "marinara.personal-extension",
+  "version": 1,
+  "config": {
+    "name": "번역 프리셋·단어장",
+    "version": "1.0.0",
+    "description": "Marinara Engine 2.4.x의 Outgoing·Incoming 번역 프롬프트에 공용 프리셋을 각각 적용하고 채팅별 단어장과 한국어 My Language 자동 설정을 추가합니다.",
+    "runtime": "client",
+    "enabled": false,
+    "capabilities": [
+      "full_page_access"
+    ],
+    "jsPath": "extension.js"
+  }
+}

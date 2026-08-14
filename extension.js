@@ -130,12 +130,13 @@ Translate the given text naturally into {{targetLanguage}} while faithfully pres
 > **Core Principle**: The translation should read as if it were written in Korean from the start, never as a translated text.
 
 Rules:
-- Preserve formatting, markdown, and special characters such as *asterisks*.
+- Preserve markdown and special characters such as *asterisks*.
 - Translate all non-dialogue text normally into Korean.
 - NEVER replace, translate, rewrite, or remove the original text of dialogue that is not already in Korean.
 - For any dialogue, preserve the original dialogue exactly as written instead of replacing it with the translation.
 - Immediately follow each original dialogue with its Korean translation in parentheses.
 - Apply this rule to dialogue in any language, regardless of the source language.
+- Restructure paragraph boundaries as needed according to the Korean Rendering Rules below.
 - Do not censor, soften, or embellish the text.
 - Output ONLY the translated text. Do not include explanations or notes.
 - When translating into Korean, follow the Korean Rendering Rules below.
@@ -145,8 +146,10 @@ Rules:
 # Korean Rendering Rules
 
 ## 대사
+- 각 대사는 "원어 대사" (한국어 번역) 전체를 하나의 대사 전용 단락으로 구성한다.
+- 대사 앞뒤의 서술, 행동 지문, 묘사 등은 각각 별도의 지문 단락으로 구성한다.
+- 원문에서 대사와 지문이 같은 단락에 있더라도 번역문에서는 대사와 지문을 각각 독립된 단락으로 재구성한다.
 - 대사는 인물 관계에 따라 존비어, 호칭, 어미를 일관되게 유지한다.
-- 각 대사는 독립된 단락으로 구성한다.
 - 대사 내 감탄사·호칭·간투어는 원문의 뉘앙스를 살려 자연스럽게 옮긴다.
 - 머뭇거림, 말 끊김, 정정, 삼킨 말은 한국어 대사의 호흡으로 살린다.
 - 형식: "원어 대사" (한국어 번역)

@@ -17,3 +17,7 @@ Version 1.3.4 replaces the Chinese literary/RP v2 prompt and adds English paraph
 Version 1.3.5 groups built-in presets by language while preserving prompt content, selections, and custom-preset order.
 
 Version 1.3.6 persists confirmed custom-preset deletion immediately without requiring a separate Save action.
+
+Version 1.3.8 moves complete prompts into task-based files under `prompts/`, loaded through the documented ordered `config.jsPath` array, without changing prompt text or behavior. See README-KO.md for the file map.
+
+Version 1.3.9 updates the previous-context and user-provided-context reference wording without changing application conditions or request logic.

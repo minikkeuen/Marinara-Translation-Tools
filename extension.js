@@ -256,8 +256,6 @@
       presetV2Updated: source.presetV2Updated === true,
       keepLegacyPresets: source.presetV2Updated === true && source.keepLegacyPresets === true,
       presets,
-      defaultConnectionId:
-        typeof source.defaultConnectionId === "string" ? source.defaultConnectionId.trim() : "",
       defaults: normalizeScope(source.defaults),
       chats,
     };
@@ -475,47 +473,9 @@
     }
   }
 
-  async function createChatWithTranslationDefaults(input, init) {
-    const response = await originalFetch.call(window, input, init);
-    if (!response.ok) return response;
-    try {
-      const chat = await response.clone().json();
-      const chatId = typeof chat?.id === "string" ? chat.id.trim() : "";
-      if (!chatId) return response;
-
-      const createUrl = new URL(requestUrl(input), window.location.href);
-      createUrl.pathname = `${createUrl.pathname.replace(/\/+$/u, "")}/${encodeURIComponent(chatId)}/metadata`;
-      createUrl.search = "";
-      createUrl.hash = "";
-      const headers = requestHeaders(input, init);
-      headers.set("content-type", "application/json");
-      const defaultConnectionId = storedConfig?.defaultConnectionId ?? "";
-      const metadata = {
-        translationProvider: "ai",
-        ...(defaultConnectionId ? { translationConnectionId: defaultConnectionId } : {}),
-      };
-      const patched = await originalFetch.call(window, createUrl.href, {
-        method: "PATCH",
-        headers,
-        body: JSON.stringify(metadata),
-      });
-      if (patched.ok) return patched;
-      marinara.log.warn(
-        `${EXTENSION_LABEL}: 새 채팅에 기본 번역 Connection을 적용하지 못했습니다. 상태 코드 ${patched.status}`,
-      );
-      return response;
-    } catch (error) {
-      marinara.log.warn(`${EXTENSION_LABEL}: 새 채팅의 번역 기본값을 적용하지 못했습니다.`, error);
-      return response;
-    }
-  }
-
   async function routedFetch(input, init) {
     const method = requestMethod(input, init);
     const pathname = requestPathname(input);
-    if (method === "POST" && pathname.endsWith("/api/chats")) {
-      return createChatWithTranslationDefaults(input, init);
-    }
     if (!pathname.endsWith("/api/translate") || method !== "POST") {
       return originalFetch.call(window, input, init);
     }
@@ -539,17 +499,13 @@
       ) {
         return originalFetch.call(window, input, init);
       }
+      if (body.provider !== "ai") return originalFetch.call(window, input, init);
       const currentConnectionId = typeof body.connectionId === "string" ? body.connectionId.trim() : "";
-      if (!storedConfig?.defaultConnectionId && currentConnectionId) {
-        void rememberDefaultConnection(currentConnectionId);
-      }
       const scope = currentScope();
       const contextual = await buildContextualText(input, init, body, scope);
       const rewrittenBody = JSON.stringify({
         ...body,
         text: contextual.text,
-        provider: "ai",
-        connectionId: currentConnectionId || undefined,
         systemPrompt: buildSystemPrompt(body, contextual.hasContext),
       });
       if (fromInit) return originalFetch.call(window, input, { ...init, body: rewrittenBody });
@@ -580,21 +536,8 @@
     await queueConfigWrite((current) => {
       let next = normalizeStoredConfig(nextConfig);
       if (current.presetV2Updated) next = upgradePresetConfig(next, current.keepLegacyPresets);
-      if (!next.defaultConnectionId) next.defaultConnectionId = current.defaultConnectionId;
       return next;
     }, true);
-  }
-
-  function rememberDefaultConnection(connectionId) {
-    const value = typeof connectionId === "string" ? connectionId.trim() : "";
-    if (!value || storedConfig?.defaultConnectionId === value) return Promise.resolve(storedConfig);
-    return queueConfigWrite(
-      (current) => ({ ...current, defaultConnectionId: value }),
-      false,
-    ).catch((error) => {
-      marinara.log.warn(`${EXTENSION_LABEL}: 기본 번역 Connection을 저장하지 못했습니다.`, error);
-      return storedConfig;
-    });
   }
 
   function setStatus(form, message, kind = "info") {
@@ -731,22 +674,6 @@
     textarea.dispatchEvent(new Event("change", { bubbles: true }));
   }
 
-  function setNativeInputValue(input, value) {
-    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
-    if (setter) setter.call(input, value);
-    else input.value = value;
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-    input.dispatchEvent(new Event("change", { bubbles: true }));
-  }
-
-  function setNativeSelectValue(select, value) {
-    const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
-    if (setter) setter.call(select, value);
-    else select.value = value;
-    select.dispatchEvent(new Event("input", { bubbles: true }));
-    select.dispatchEvent(new Event("change", { bubbles: true }));
-  }
-
   function stripIncomingVoiceInstruction(prompt) {
     let result = typeof prompt === "string" ? prompt : "";
     while (true) {
@@ -819,46 +746,6 @@
     }
     if (incoming.value !== nextPrompt) setNativeTextareaValue(incoming, nextPrompt);
     return true;
-  }
-
-  function applyTranslationDefaults(content) {
-    const nativeSelects = Array.from(content.querySelectorAll("select")).filter(
-      (select) => !select.closest(`[${PANEL_ATTRIBUTE}]`),
-    );
-    const providerSelect = nativeSelects.find((select) => {
-      const values = new Set(Array.from(select.options, (option) => option.value));
-      return ["google", "deepl", "deeplx", "ai"].every((value) => values.has(value));
-    });
-    if (providerSelect) {
-      if (providerSelect.value !== "ai") setNativeSelectValue(providerSelect, "ai");
-      providerSelect.disabled = true;
-      providerSelect.dataset.tpgProviderLocked = "true";
-      providerSelect.setAttribute("aria-label", "Provider, AI로 고정됨");
-    }
-
-    const connectionSelect = nativeSelects.find((select) => select !== providerSelect);
-    if (connectionSelect) {
-      if (!connectionSelect.dataset.tpgDefaultConnectionListener) {
-        connectionSelect.dataset.tpgDefaultConnectionListener = "true";
-        const listener = () => {
-          if (connectionSelect.value) void rememberDefaultConnection(connectionSelect.value);
-        };
-        connectionSelect._tpgDefaultConnectionListener = listener;
-        connectionSelect.addEventListener("change", listener);
-      }
-      const defaultConnectionId = storedConfig?.defaultConnectionId ?? "";
-      if (!defaultConnectionId && connectionSelect.value) {
-        void rememberDefaultConnection(connectionSelect.value);
-      }
-    }
-
-    const nativeInputs = Array.from(content.querySelectorAll('input[type="text"]')).filter(
-      (input) => !input.closest(`[${PANEL_ATTRIBUTE}]`),
-    );
-    const myLanguageInput = nativeInputs[1];
-    if (!myLanguageInput) return;
-    const koreanValue = "Korean";
-    if (myLanguageInput.value !== koreanValue) setNativeInputValue(myLanguageInput, koreanValue);
   }
 
   function applyPreset(form, direction, showStatus = true) {
@@ -1233,7 +1120,6 @@
       if (!isTranslationHeader(header)) continue;
       const content = header.nextElementSibling;
       if (!content) continue;
-      applyTranslationDefaults(content);
       if (content.querySelector(`[${PANEL_ATTRIBUTE}]`)) continue;
       const panel = document.createElement("section");
       panel.setAttribute(PANEL_ATTRIBUTE, "true");
@@ -1317,18 +1203,6 @@
     if (window.fetch === routedFetch) window.fetch = originalFetch;
     observer.disconnect();
     marinara.clearInterval(chatPoll);
-    document.querySelectorAll('[data-tpg-provider-locked="true"]').forEach((select) => {
-      select.disabled = false;
-      select.removeAttribute("data-tpg-provider-locked");
-      if (select.getAttribute("aria-label") === "Provider, AI로 고정됨") select.removeAttribute("aria-label");
-    });
-    document.querySelectorAll('[data-tpg-default-connection-listener="true"]').forEach((select) => {
-      if (select._tpgDefaultConnectionListener) {
-        select.removeEventListener("change", select._tpgDefaultConnectionListener);
-        delete select._tpgDefaultConnectionListener;
-      }
-      select.removeAttribute("data-tpg-default-connection-listener");
-    });
     style.remove();
     document.querySelectorAll(`[${PANEL_ATTRIBUTE}]`).forEach((panel) => panel.remove());
     forms.clear();

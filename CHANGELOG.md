@@ -1,5 +1,13 @@
 # 업데이트 내역
 
+## 1.4.0
+
+- Provider를 AI로 고정하는 기능 제거.
+- My Language를 Korean으로 자동 변경하는 기능 제거.
+- 번역 Connection을 확장 공용 기본값으로 저장하고 새 채팅에 적용하는 기능 제거.
+- Provider, 언어, Connection 설정은 Marinara Engine 2.4.6의 번역 기본값 기능을 그대로 사용.
+- 프리셋·단어장·기타 지침·이전 대화 Context는 AI 번역 요청에만 적용.
+
 ## 1.3.9
 
 - 이전 대화 Context와 자유 입력 Context의 참고 지침 문구 변경. 적용 조건과 요청 로직은 유지.

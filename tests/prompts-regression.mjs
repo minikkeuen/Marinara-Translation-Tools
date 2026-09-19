@@ -19,6 +19,9 @@ const source = files.map((file) => {
 new vm.Script(source);
 const entry = fs.readFileSync(path.join(root, "extension.js"), "utf8");
 assert(!entry.includes("You are an expert literary and roleplay translator."));
+for (const removed of ["defaultConnectionId", "createChatWithTranslationDefaults", "applyTranslationDefaults"]) {
+  assert(!entry.includes(removed), `${removed} must not remain in the extension`);
+}
 
 function load(text) {
   const requests = [];
@@ -77,6 +80,14 @@ for (const state of states) {
   assert.equal(result.at(-1).prompt, "custom prompt");
 }
 
+current.set({ chats: { "chat-test": { glossary: "A = B" } } });
+const googleBody = { text: "A", targetLanguage: "ko", provider: "google" };
+await current.routedFetch("http://localhost/api/translate", {
+  method: "POST",
+  body: JSON.stringify(googleBody),
+});
+assert.deepEqual(json(current.requests.at(-1)), googleBody, "Non-AI translation requests must remain unchanged");
+
 // Optional pre-refactor source comparison, using a read-only baseline copy.
 if (process.argv[2]) {
   const oldSource = fs.readFileSync(process.argv[2], "utf8");
@@ -111,7 +122,6 @@ if (process.argv[2]) {
         for (const targetLanguage of ["Korean", "Chinese", "Japanese", "English"]) {
           const config = {
             presetV2Updated: true, keepLegacyPresets: false,
-            defaultConnectionId: "test-connection",
             chats: { "chat-test": {
               glossary: "A = B", freeContextEnabled, freeContext: "중세 판타지",
               contextEnabled, contextIncludeUserInput,

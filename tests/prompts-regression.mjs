@@ -10,7 +10,7 @@ const manifest = JSON.parse(fs.readFileSync(path.join(root, "manifest.json"), "u
 const files = manifest.config.jsPath;
 assert(Array.isArray(files));
 assert.equal(files.at(-1), "extension.js");
-assert.equal(files.filter((file) => file.startsWith("prompts/")).length, 6);
+assert.equal(files.filter((file) => file.startsWith("prompts/")).length, 7);
 const source = files.map((file) => {
   const text = fs.readFileSync(path.join(root, file), "utf8");
   new vm.Script(text, { filename: file });
@@ -74,10 +74,29 @@ const states = [
   { presetV2Updated: true, keepLegacyPresets: false },
 ];
 const custom = [{ id: "custom-test", name: "사용자 정의", prompt: "custom prompt" }];
+const inputPresetNames = ["문학·RP·3인칭 지문 인풋용", "문학·RP·3인칭 지문 인풋용 대사 병기"];
+assert.equal(
+  createHash("sha256").update(JSON.stringify(current.ADDITIONAL_BUILTIN_PRESETS.slice(0, 3))).digest("hex"),
+  "d510be9ddaa938c4dd15dfc9a463464358239f8b460c97a28478e2eae915e0ba",
+  "Existing additional preset text and metadata must remain unchanged",
+);
 for (const state of states) {
   const result = current.normalizePresets(custom, state);
   assert.equal(new Set(result.map((preset) => preset.id)).size, result.length);
   assert.equal(result.at(-1).prompt, "custom prompt");
+  for (const name of inputPresetNames) {
+    const preset = result.find((item) => item.name === name);
+    assert(preset?.builtin && preset.replace, `${name} is available regardless of catalog upgrade state`);
+    assert(preset.prompt.length <= 5000, `${name} fits the native prompt limit`);
+  }
+}
+
+for (const name of inputPresetNames) {
+  const preset = current.normalizePresets([]).find((item) => item.name === name);
+  current.set({ chats: { "chat-test": { outgoingPresetId: preset.id } } });
+  const body = { text: '그는 웃었다. "안녕."', targetLanguage: "English", provider: "ai", connectionId: "test", systemPrompt: preset.prompt };
+  await current.routedFetch("http://localhost/api/translate", { method: "POST", body: JSON.stringify(body) });
+  assert.deepEqual(json(current.requests.at(-1)), body, `${name} reaches AI translation unchanged`);
 }
 
 current.set({ chats: { "chat-test": { glossary: "A = B" } } });

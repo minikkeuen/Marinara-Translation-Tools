@@ -128,11 +128,27 @@
       replace: true,
       builtin: true,
     }),
+    Object.freeze({
+      id: "builtin-literary-roleplay-input",
+      name: "문학·RP·3인칭 지문 인풋용",
+      prompt: MARINARA_TRANSLATION_INPUT_PROMPTS.literaryRoleplay,
+      replace: true,
+      builtin: true,
+    }),
+    Object.freeze({
+      id: "builtin-literary-roleplay-input-bilingual-dialogue",
+      name: "문학·RP·3인칭 지문 인풋용 대사 병기",
+      prompt: MARINARA_TRANSLATION_INPUT_PROMPTS.bilingualDialogue,
+      replace: true,
+      builtin: true,
+    }),
   ]);
   const BUILTIN_PRESET_ORDER = new Map([
     "builtin-inherit",
     "builtin-roleplay",
     "builtin-literary-roleplay",
+    "builtin-literary-roleplay-input",
+    "builtin-literary-roleplay-input-bilingual-dialogue",
     "builtin-english-korean",
     "builtin-english-korean-v2",
     "builtin-english-paraphrase-korean",
@@ -1106,19 +1122,13 @@
     return form;
   }
 
-  function isTranslationHeader(element) {
-    if (!(element instanceof HTMLElement) || element.getAttribute("role") !== "button") return false;
-    if (element.getAttribute("aria-expanded") !== "true") return false;
-    const label = element.textContent?.trim() ?? "";
-    return label === "Translation" || label === "번역";
-  }
-
   function injectPanels() {
     injectQueued = false;
     if (!storedConfig) return;
-    for (const header of document.querySelectorAll('div[role="button"][aria-expanded="true"]')) {
-      if (!isTranslationHeader(header)) continue;
-      const content = header.nextElementSibling;
+    for (const section of document.querySelectorAll('[data-chat-settings-section="translation"]')) {
+      // 2.5 drawers also render this body in detached windows, without a toggle.
+      const content = Array.from(section.children).find((child) => child.matches(".mari-drawer__body"))
+        ?? section.querySelector(':scope > div[role="button"][aria-expanded="true"]')?.nextElementSibling;
       if (!content) continue;
       if (content.querySelector(`[${PANEL_ATTRIBUTE}]`)) continue;
       const panel = document.createElement("section");

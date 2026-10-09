@@ -289,7 +289,15 @@ function createMarinaraAutomaticTranslation({
         "PATCH",
         { automaticTranslationSource: current.content },
       );
-      messages.push({ type: "message_saved", data: saved });
+      const published = run.publishedTranslations.get(`${candidate.id}:${candidate.activeSwipeIndex ?? 0}`);
+      const publishedExtra = parse(published?.extra);
+      const savedExtra = parse(saved?.extra);
+      const sameVisibleMessage =
+        published?.content === saved?.content &&
+        ["translation", "translationSource", "translationHidden", "automaticTranslationSource"].every(
+          (key) => publishedExtra[key] === savedExtra[key],
+        );
+      if (!sameVisibleMessage) messages.push({ type: "message_saved", data: saved });
     }
     return messages;
   };
@@ -298,6 +306,7 @@ function createMarinaraAutomaticTranslation({
     const decoder = new TextDecoder();
     const encoder = new TextEncoder();
     const jobs = [];
+    run.publishedTranslations = new Map();
     run.abort = new AbortController();
     let output;
     let buffer = "";
@@ -324,7 +333,10 @@ function createMarinaraAutomaticTranslation({
       jobs.push(
         translateMessage(run, message, final)
           .then((saved) => {
-            if (saved) publish({ type: "message_saved", data: saved });
+            if (saved) {
+              run.publishedTranslations.set(`${saved.id}:${saved.activeSwipeIndex ?? 0}`, saved);
+              publish({ type: "message_saved", data: saved });
+            }
           })
           .catch((error) => {
             if (!stopped && !run.cancelled) marinara.log.warn("확장 자동 번역 처리 실패", error);

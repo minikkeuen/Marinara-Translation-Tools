@@ -3,7 +3,7 @@
   "version": 1,
   "config": {
     "name": "번역 프리셋·단어장",
-    "version": "1.4.2",
+    "version": "1.5.3",
     "description": "Marinara Engine 2.4.x·2.5.x에 AI 번역 프롬프트 프리셋, 채팅별 단어장과 선택형 기타 지침·이전 대화 Context를 추가합니다.",
     "runtime": "client",
     "enabled": false,
@@ -18,6 +18,8 @@
       "prompts/source-style.js",
       "prompts/input.js",
       "prompts/reference.js",
+      "compatibility/game-translation-source.js",
+      "automatic-translation.js",
       "extension.js"
     ]
   }

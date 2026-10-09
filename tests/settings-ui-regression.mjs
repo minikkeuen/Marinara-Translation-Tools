@@ -44,7 +44,7 @@ class Element {
 const document = new Element("document");
 document.createElement = (tag) => new Element(tag);
 const formMarkup = source.match(/form\.innerHTML = `([\s\S]*?)`;/)[1];
-for (const name of ["outgoingPresetId", "incomingPresetId", "glossary"]) {
+for (const name of ["outgoingPresetId", "incomingPresetId", "glossary", "translateAfterPostProcessing"]) {
   assert(formMarkup.includes(`name="${name}"`), `${name} control remains in the shared UI`);
 }
 let voiceSyncs = 0;
@@ -161,7 +161,7 @@ const config = api.normalizeStoredConfig({
   presets: [{ id: "custom", name: "사용자 프리셋", prompt: "custom prompt" }],
   defaults: { glossary: "default = 기본" },
   chats: {
-    "chat-test": { glossary: "마리나라 = Marinara", outgoingPresetId: "custom", incomingVoiceEnabled: true, incomingVoicePrompt: "voice" },
+    "chat-test": { glossary: "마리나라 = Marinara", outgoingPresetId: "custom", incomingVoiceEnabled: true, incomingVoicePrompt: "voice", translateAfterPostProcessing: true },
     "chat-other": { glossary: "other = 다른", contextEnabled: true },
   },
 });
@@ -169,4 +169,6 @@ await api.saveConfig(config);
 assert.deepEqual(JSON.parse(JSON.stringify(saved.at(-1))), { config: JSON.parse(JSON.stringify(config)) });
 assert.equal(saved.at(-1).config.chats["chat-test"].glossary, "마리나라 = Marinara");
 assert.equal(saved.at(-1).config.chats["chat-other"].glossary, "other = 다른");
+assert.equal(saved.at(-1).config.chats["chat-test"].translateAfterPostProcessing, true);
+assert.equal(saved.at(-1).config.chats["chat-other"].translateAfterPostProcessing, false);
 console.log("2.4 and 2.5 docked/detached UI injection, reopen, deduplication, native preset/voice application and glossary isolation passed.");

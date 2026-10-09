@@ -10,7 +10,6 @@
   const PANEL_ATTRIBUTE = "data-translation-presets-glossary";
   const SYSTEM_PROMPT_MAX = 5000;
   const TRANSLATION_TEXT_MAX = 50000;
-  const FREE_CONTEXT_MAX = 1000;
   const CONTEXT_MESSAGE_COUNT_DEFAULT = 3;
   const CONTEXT_MESSAGE_COUNT_MIN = 1;
   const CONTEXT_MESSAGE_COUNT_MAX = 10;
@@ -174,6 +173,7 @@
     contextIncludeTranslation: true,
     contextIncludeUserInput: false,
     contextMessageCount: CONTEXT_MESSAGE_COUNT_DEFAULT,
+    translateAfterPostProcessing: false,
     outgoingPresetId: "builtin-inherit",
     incomingPresetId: "builtin-inherit",
     outgoingOriginalPrompt: "",
@@ -187,6 +187,34 @@
   let presetDeletionPending = false;
   let activeChatId = readActiveChatId();
   let injectQueued = false;
+  let translationLimitNotice = null;
+
+  class TranslationLimitError extends Error {
+    constructor(field, length, limit) {
+      const label = field === "systemPrompt" ? "시스템 프롬프트" : "번역 본문과 참고 블록";
+      super(`${label} ${length.toLocaleString()}자가 ${limit.toLocaleString()}자 제한을 초과하여 번역을 중단했습니다. 지침이나 참고 정보의 길이를 줄여 주세요. 내용은 잘라내지 않았습니다.`);
+      this.field = field;
+      this.length = length;
+      this.limit = limit;
+    }
+  }
+
+  function showTranslationLimitError(message) {
+    if (typeof document === "undefined" || !document.body) return;
+    translationLimitNotice?.remove();
+    const notice = document.createElement("div");
+    notice.className = "tpg-limit-notice";
+    notice.setAttribute("role", "alert");
+    const text = document.createElement("span");
+    text.textContent = message;
+    const close = document.createElement("button");
+    close.type = "button";
+    close.textContent = "닫기";
+    close.addEventListener("click", () => notice.remove());
+    notice.append(text, close);
+    document.body.append(notice);
+    translationLimitNotice = notice;
+  }
 
   function readActiveChatId() {
     try {
@@ -249,6 +277,7 @@
       contextIncludeTranslation: source.contextIncludeTranslation !== false,
       contextIncludeUserInput: source.contextIncludeUserInput === true,
       contextMessageCount,
+      translateAfterPostProcessing: source.translateAfterPostProcessing === true,
       outgoingPresetId: typeof source.outgoingPresetId === "string" ? source.outgoingPresetId : "builtin-inherit",
       incomingPresetId: typeof source.incomingPresetId === "string" ? source.incomingPresetId : "builtin-inherit",
       outgoingOriginalPrompt:
@@ -312,31 +341,30 @@
   function freeContextSection(raw) {
     const context = raw.trim();
     if (!context) return "";
-    const escaped = escapeContextValue(context).slice(0, FREE_CONTEXT_MAX);
+    const escaped = escapeContextValue(context);
     return MARINARA_TRANSLATION_REFERENCE_RENDERERS.freeContext(escaped);
   }
 
-  function buildSystemPrompt(body, hasContext = false) {
-    const scope = currentScope();
+  function buildSystemPrompt(body, hasContext = false, scope = currentScope(), hasGlossary = false) {
     const existing = typeof body.systemPrompt === "string" ? body.systemPrompt.trim() : "";
-    const base = existing || BASE_PROMPT;
-    const glossary = glossarySection(scope.glossary, body.text, body.targetLanguage);
-    let prompt = glossary ? `${base}\n\n${glossary}` : base;
-    const protectedSections = [];
-    const freeContext = freeContextSection(scope.freeContextEnabled ? scope.freeContext : "");
-    if (freeContext) protectedSections.push(freeContext);
-    if (hasContext) protectedSections.push(CONTEXT_SYSTEM_INSTRUCTIONS);
-    if (protectedSections.length) {
-      const separator = "\n\n";
-      const protectedSuffix = protectedSections.join(separator);
-      const available = SYSTEM_PROMPT_MAX - separator.length - protectedSuffix.length;
-      prompt = `${prompt.slice(0, Math.max(0, available)).trimEnd()}${separator}${protectedSuffix}`;
+    let base = existing || BASE_PROMPT;
+    let voice = "";
+    if (scope.incomingVoiceEnabled && scope.incomingVoicePrompt.trim()) {
+      const section = MARINARA_TRANSLATION_REFERENCE_RENDERERS.characterVoice(scope.incomingVoicePrompt.trim());
+      if (base.endsWith(section)) {
+        base = base.slice(0, -section.length).trimEnd();
+        voice = section;
+      }
     }
+    const sections = [base];
+    if (hasGlossary) sections.push(MARINARA_TRANSLATION_REFERENCE_PROMPTS.glossary);
+    const freeContext = freeContextSection(scope.freeContextEnabled ? scope.freeContext : "");
+    if (freeContext) sections.push(freeContext);
+    if (voice) sections.push(voice);
+    if (hasContext) sections.push(CONTEXT_SYSTEM_INSTRUCTIONS);
+    const prompt = sections.filter(Boolean).join("\n\n");
     if (prompt.length > SYSTEM_PROMPT_MAX) {
-      marinara.log.warn(
-        `${EXTENSION_LABEL}: 시스템 프롬프트가 ${SYSTEM_PROMPT_MAX}자를 넘어 뒤쪽을 잘랐습니다.`,
-      );
-      prompt = prompt.slice(0, SYSTEM_PROMPT_MAX);
+      throw new TranslationLimitError("systemPrompt", prompt.length, SYSTEM_PROMPT_MAX);
     }
     return prompt;
   }
@@ -436,19 +464,25 @@
     return target === "korean" || target === "ko" || target === "ko-kr" || target === "한국어";
   }
 
-  async function buildContextualText(input, init, body, scope) {
+  async function buildContextualText(input, init, body, scope, context = {}, glossary = "") {
+    const chatId = context.chatId ?? activeChatId;
+    const glossaryPrefix = glossary ? `${glossary}\n\n` : "";
+    const referenceText = glossary ? `${glossaryPrefix}[Text to Translate]\n${body.text}\n[End Text]` : body.text;
+    if (referenceText.length > TRANSLATION_TEXT_MAX) {
+      throw new TranslationLimitError("text", referenceText.length, TRANSLATION_TEXT_MAX);
+    }
     if (
       !scope.contextEnabled ||
       (!scope.contextIncludeOriginal && !scope.contextIncludeTranslation) ||
-      !activeChatId
+      !chatId
     ) {
-      return { text: body.text, hasContext: false };
+      return { text: referenceText, hasContext: false };
     }
-    if (!isIncomingTranslation(body, scope) && !scope.contextIncludeUserInput) {
-      return { text: body.text, hasContext: false };
+    if (!(context.incoming ?? isIncomingTranslation(body, scope)) && !scope.contextIncludeUserInput) {
+      return { text: referenceText, hasContext: false };
     }
     try {
-      const response = await originalFetch.call(window, messagesUrl(input, activeChatId), {
+      const response = await originalFetch.call(window, messagesUrl(input, chatId), {
         method: "GET",
         headers: requestHeaders(input, init),
       });
@@ -462,15 +496,15 @@
       );
       let targetIndex = -1;
       for (let index = eligible.length - 1; index >= 0; index -= 1) {
-        if (eligible[index].content === body.text) {
+        if (context.messageId ? eligible[index].id === context.messageId : eligible[index].content === body.text) {
           targetIndex = index;
           break;
         }
       }
       const previous = (targetIndex >= 0 ? eligible.slice(0, targetIndex) : eligible)
         .slice(-scope.contextMessageCount);
-      const prefix = "[Previous Context — Reference Only]\n\n";
-      const suffix = `\n\n[Text to Translate]\n${body.text}`;
+      const prefix = `${glossaryPrefix}[Previous Context — Reference Only]\n\n`;
+      const suffix = `\n\n[Text to Translate]\n${body.text}\n[End Text]`;
       let remaining = TRANSLATION_TEXT_MAX - prefix.length - suffix.length;
       const formatted = [];
       for (let index = previous.length - 1; index >= 0; index -= 1) {
@@ -481,15 +515,15 @@
         formatted.unshift(block);
         remaining -= cost;
       }
-      if (!formatted.length) return { text: body.text, hasContext: false };
+      if (!formatted.length) return { text: referenceText, hasContext: false };
       return { text: `${prefix}${formatted.join("\n\n")}${suffix}`, hasContext: true };
     } catch (error) {
       marinara.log.warn(`${EXTENSION_LABEL}: 이전 대화 Context를 불러오지 못해 기존 방식으로 번역합니다.`, error);
-      return { text: body.text, hasContext: false };
+      return { text: referenceText, hasContext: false };
     }
   }
 
-  async function routedFetch(input, init) {
+  async function routedFetch(input, init, context) {
     const method = requestMethod(input, init);
     const pathname = requestPathname(input);
     if (!pathname.endsWith("/api/translate") || method !== "POST") {
@@ -517,16 +551,27 @@
       }
       if (body.provider !== "ai") return originalFetch.call(window, input, init);
       const currentConnectionId = typeof body.connectionId === "string" ? body.connectionId.trim() : "";
-      const scope = currentScope();
-      const contextual = await buildContextualText(input, init, body, scope);
+      const scope = context?.chatId ? currentScope(storedConfig, context.chatId) : currentScope();
+      const glossary = glossarySection(scope.glossary, body.text, body.targetLanguage);
+      const contextual = await buildContextualText(input, init, body, scope, context, glossary);
       const rewrittenBody = JSON.stringify({
         ...body,
         text: contextual.text,
-        systemPrompt: buildSystemPrompt(body, contextual.hasContext),
+        systemPrompt: buildSystemPrompt(body, contextual.hasContext, scope, !!glossary),
       });
       if (fromInit) return originalFetch.call(window, input, { ...init, body: rewrittenBody });
       return originalFetch.call(window, new Request(input, { ...init, body: rewrittenBody }));
     } catch (error) {
+      if (error instanceof TranslationLimitError) {
+        marinara.log.warn(`${EXTENSION_LABEL}: ${error.message}`);
+        showTranslationLimitError(error.message);
+        if (!context?.chatId || context.chatId === activeChatId) {
+          for (const form of forms) if (form.isConnected) setStatus(form, error.message, "error");
+        }
+        return new Response(JSON.stringify({ error: error.message, code: "TRANSLATION_TOOLS_LIMIT_EXCEEDED", field: error.field, length: error.length, limit: error.limit }), {
+          status: 422, headers: { "Content-Type": "application/json" },
+        });
+      }
       marinara.log.warn(`${EXTENSION_LABEL}: 번역 요청을 수정하지 못해 원래 요청을 사용합니다.`, error);
       return originalFetch.call(window, input, init);
     }
@@ -818,6 +863,7 @@
     form.elements.namedItem("contextIncludeTranslation").checked = scope.contextIncludeTranslation;
     form.elements.namedItem("contextIncludeUserInput").checked = scope.contextIncludeUserInput;
     form.elements.namedItem("contextMessageCount").value = String(scope.contextMessageCount);
+    form.elements.namedItem("translateAfterPostProcessing").checked = scope.translateAfterPostProcessing;
     form._originalPrompts = {
       outgoing: scope.outgoingOriginalPrompt,
       incoming: scope.incomingOriginalPrompt,
@@ -938,6 +984,11 @@
         </label>
         <p class="tpg-help">현재 번역 대상 이전의 user/assistant 메시지를 일관성 참고용으로만 전달합니다.</p>
       </div>
+      <label class="tpg-toggle-row">
+        <strong>후처리 후 번역</strong>
+        <input type="checkbox" name="translateAfterPostProcessing" aria-label="후처리 후 번역">
+      </label>
+      <p class="tpg-help">자동번역 ON 시 확장이 번역합니다. 켜면 후처리 완료 후 최종 응답을, 끄면 응답 저장 직후의 내용을 번역합니다.</p>
       <h5 class="tpg-section-title">공용 프리셋 관리</h5>
       <select class="tpg-standalone-select" name="managePresetId" aria-label="관리할 프리셋"></select>
       <div class="tpg-preset-editor" data-tpg-preset-editor hidden>
@@ -1097,6 +1148,7 @@
         contextIncludeTranslation: form.elements.namedItem("contextIncludeTranslation").checked,
         contextIncludeUserInput: form.elements.namedItem("contextIncludeUserInput").checked,
         contextMessageCount: form.elements.namedItem("contextMessageCount").value,
+        translateAfterPostProcessing: form.elements.namedItem("translateAfterPostProcessing").checked,
         outgoingPresetId: form.elements.namedItem("outgoingPresetId").value,
         incomingPresetId: form.elements.namedItem("incomingPresetId").value,
         outgoingOriginalPrompt: form._originalPrompts.outgoing,
@@ -1140,11 +1192,32 @@
     }
   }
 
+  async function translateAutomaticRequest(body, headers, signal, messageId) {
+    const scope = currentScope(storedConfig, body.chatId);
+    if (body.provider === "ai") {
+      const preset = storedConfig?.presets.find((item) => item.id === scope.incomingPresetId);
+      let base = preset?.replace ? preset.prompt : body.systemPrompt?.trim() || BASE_PROMPT;
+      const voice = MARINARA_TRANSLATION_REFERENCE_RENDERERS.characterVoice(scope.incomingVoicePrompt.trim());
+      if (base.endsWith(voice)) base = base.slice(0, -voice.length).trimEnd();
+      body = { ...body, systemPrompt: composeIncomingPrompt(base, scope.incomingVoiceEnabled, scope.incomingVoicePrompt) };
+    }
+    const response = await routedFetch("/api/translate", {
+      method: "POST", headers, signal, body: JSON.stringify(body),
+    }, { chatId: body.chatId, incoming: true, messageId });
+    if (!response.ok) {
+      const failure = await response.json().catch(() => null);
+      throw new Error(failure?.error || `자동 번역 요청 실패 (${response.status})`);
+    }
+    return response.json();
+  }
+
   const style = document.createElement("style");
   style.dataset.translationPresetsGlossary = marinara.extension.id;
   style.textContent = `
     [${PANEL_ATTRIBUTE}] { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 14px; }
     .tpg-form { display: grid; gap: 10px; color: var(--foreground); font-family: inherit; }
+    .tpg-limit-notice { position: fixed; right: 16px; bottom: 16px; z-index: 10000; display: flex; align-items: start; gap: 12px; max-width: min(440px, calc(100vw - 32px)); border: 1px solid var(--destructive); border-radius: 9px; background: var(--background); padding: 12px; color: var(--foreground); font: inherit; font-size: .75rem; line-height: 1.5; box-shadow: 0 4px 16px #0003; }
+    .tpg-limit-notice button { flex: none; border: 1px solid var(--border); border-radius: 6px; background: var(--secondary); padding: 4px 8px; color: var(--foreground); font: inherit; cursor: pointer; }
     .tpg-section-title { margin: 6px 0 -2px; color: var(--foreground); font-size: .75rem; font-weight: 700; line-height: 1.35; }
     .tpg-preset-editor { display: grid; gap: 10px; border: 1px solid var(--border); border-radius: 9px; background: color-mix(in oklch, var(--secondary) 62%, transparent); padding: 10px; }
     .tpg-preset-editor[hidden] { display: none; }
@@ -1194,7 +1267,21 @@
   `;
   document.head.append(style);
 
-  window.fetch = routedFetch;
+  const automaticTranslation = createMarinaraAutomaticTranslation({
+    marinara,
+    fetch: (input, init) => originalFetch.call(window, input, init),
+    headersFor: requestHeaders,
+    scopeFor: (chatId) => currentScope(storedConfig, chatId),
+    gameSource: (message) => MARINARA_GAME_TRANSLATION.buildGameTranslationSource(message),
+    translate: translateAutomaticRequest,
+  });
+  let runtimeActive = true;
+  const managedFetch = (input, init) => runtimeActive
+    ? automaticTranslation.fetch(input, init, routedFetch)
+    : originalFetch.call(window, input, init);
+  const restoreAutomaticTranslation = () => automaticTranslation.pagehide();
+  window.addEventListener("pagehide", restoreAutomaticTranslation);
+  window.fetch = managedFetch;
   const observer = new MutationObserver(() => {
     if (injectQueued) return;
     injectQueued = true;
@@ -1210,22 +1297,29 @@
   }, 250);
 
   marinara.onCleanup(() => {
-    if (window.fetch === routedFetch) window.fetch = originalFetch;
+    runtimeActive = false;
+    if (window.fetch === managedFetch) window.fetch = originalFetch;
+    window.removeEventListener("pagehide", restoreAutomaticTranslation);
+    const restoration = automaticTranslation.cleanup();
     observer.disconnect();
     marinara.clearInterval(chatPoll);
     style.remove();
     document.querySelectorAll(`[${PANEL_ATTRIBUTE}]`).forEach((panel) => panel.remove());
     forms.clear();
+    translationLimitNotice?.remove();
+    return restoration;
   });
 
   void marinara.storage
     .get()
     .then((value) => {
       storedConfig = normalizeStoredConfig(value?.config);
+      void automaticTranslation.start(value).catch((error) => marinara.log.warn("자동 번역 초기화 실패", error));
       injectPanels();
     })
     .catch((error) => {
       storedConfig = normalizeStoredConfig(null);
+      void automaticTranslation.start(null).catch((failure) => marinara.log.warn("자동 번역 초기화 실패", failure));
       marinara.log.warn(`${EXTENSION_LABEL}: 저장된 설정을 불러오지 못해 기본값을 사용합니다.`, error);
       injectPanels();
     });
